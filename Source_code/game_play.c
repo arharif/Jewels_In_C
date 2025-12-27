@@ -170,7 +170,87 @@ static bool mark_kill(game *g)
     return any;
 }
 
-/* Actually remove killed cells (set to EMPTY) */
+/* =======================================================================================
+ * Scoring
+ * ======================================================================================= */
+
+/* combo counter (cascades): 0 for first kill, 1 for second, ... */
+static int s_combo = 0;
+
+static void score_on_kill(game *g)
+{
+    if (!g || !g->b || !g->score) return;
+
+    board *b = g->b;
+
+    int killed_total = 0;
+    int killed_flame = 0;
+    int killed_star  = 0;
+    int killed_grav  = 0;
+    int killed_hyper = 0;
+
+    for (int y = 0; y < b->hauteur; y++) {
+        for (int x = 0; x < b->largeur; x++) {
+            if (b->plateau[y][x].kill == KILL_NOKILL) continue;
+
+            element e = b->plateau[y][x].object;
+            if (e == EMPTY) continue;
+
+            /* Count kills */
+            killed_total++;
+
+            if (e == HYPERCUBE) killed_hyper++;
+
+            /* Count special powers if you use them later */
+            if (e >= AMBER && e <= TOPAZ) {
+                if (b->plateau[y][x].power == GEM_FLAME)   killed_flame++;
+                if (b->plateau[y][x].power == GEM_STAR)    killed_star++;
+                if (b->plateau[y][x].power == GEM_GRAVITY) killed_grav++;
+            }
+        }
+    }
+
+    if (killed_total <= 0) return;
+
+    /* Basic scoring model:
+       - 10 points per gem
+       - combo multiplier: 1x, 2x, 3x, ... for cascades
+    */
+    const int base_points = 10;
+    int mult = 1 + s_combo;         /* first kill = 1, second = 2, ... */
+    int gained = killed_total * base_points * mult;
+
+    g->score->scores[SC_CONSUMED] += killed_total;
+
+    g->score->scores[SC_FLAMED]     += killed_flame;
+    g->score->scores[SC_STARRED]    += killed_star;
+    g->score->scores[SC_GRAVITY]    += 0;           /* gravity usage is tracked elsewhere */
+    g->score->scores[SC_HYPERCUBES] += killed_hyper;
+
+    g->score->level_score += gained;
+    g->score->scores[SC_LEVEL]  = g->score->level_score;
+    g->score->scores[SC_GLOBAL] += gained;
+
+    /* next cascade will have higher multiplier */
+    s_combo++;
+}
+
+static void maybe_end_classic_level(game *g)
+{
+    if (!g || !g->score) return;
+    if (g->puzzle) return;
+
+    /* target_score can be -1 in demo => ignore if <= 0 */
+    if (g->score->target_score > 0 &&
+        g->score->level_score >= g->score->target_score) {
+        game_classic_score();
+    }
+}
+
+/* =======================================================================================
+ * Kill & fall application
+ * ======================================================================================= */
+
 static void apply_kill(board *b)
 {
     if (!b) return;
@@ -197,7 +277,6 @@ static void move_cell(board *b,
                       bool *moved)
 {
     if (!b) return;
-
     if (src_y == dst_y && src_x == dst_x) {
         b->plateau[dst_y][dst_x].fall = 0;
         return;
@@ -217,53 +296,6 @@ static void move_cell(board *b,
     b->plateau[dst_y][dst_x].fall = (dist > 0 ? dist : 0);
 
     if (moved) *moved = true;
-}
-
-/* =======================================================================================
- * Scoring helpers (FIXED)
- * ======================================================================================= */
-
-static int combo_chain = 0; /* increases on cascades, resets when cascade ends */
-
-static int count_killed_cells(const board *b)
-{
-    if (!b) return 0;
-    int killed = 0;
-    for (int y = 0; y < b->hauteur; y++) {
-        for (int x = 0; x < b->largeur; x++) {
-            if (b->plateau[y][x].kill != KILL_NOKILL) {
-                killed++;
-            }
-        }
-    }
-    return killed;
-}
-
-static void score_on_elimination(game *g, int killed)
-{
-    if (!g || !g->score || killed <= 0) return;
-
-    /* Simple but consistent scoring:
-       - base points: 10 per eliminated gem
-       - cascade multiplier: 1,2,3,...
-       - bonus for 4+ eliminations in the same step
-    */
-    int base = killed * 10;
-    int mult = (combo_chain <= 0) ? 1 : combo_chain;
-    int bonus = (killed >= 4) ? (killed * 5) : 0;
-
-    int gained = base * mult + bonus;
-
-    /* Update scores */
-    g->score->level_score += gained;
-    g->score->scores[SC_GLOBAL] += gained;
-    g->score->scores[SC_CONSUMED] += killed;
-
-    /* Classic mode: end level if target reached */
-    if (!g->puzzle && g->score->target_score > 0 &&
-        g->score->level_score >= g->score->target_score) {
-        game_classic_score();
-    }
 }
 
 /* Apply gravity + refill empties; sets fall distances for animation */
@@ -290,12 +322,10 @@ static bool mark_fall(game *g)
                 }
             }
 
-            /* refill from top (0..dst_y) */
             for (int y = dst_y; y >= 0; y--) {
                 b->plateau[y][x].object = random_basic_element();
                 b->plateau[y][x].power  = GEM_BASIC;
                 b->plateau[y][x].kill   = KILL_NOKILL;
-                /* animate new gems falling from outside */
                 b->plateau[y][x].fall   = (dst_y - y + 1);
                 moved = true;
             }
@@ -314,7 +344,6 @@ static bool mark_fall(game *g)
                 }
             }
 
-            /* refill from bottom (dst_y..end) */
             for (int y = dst_y; y < b->hauteur; y++) {
                 b->plateau[y][x].object = random_basic_element();
                 b->plateau[y][x].power  = GEM_BASIC;
@@ -337,7 +366,6 @@ static bool mark_fall(game *g)
                 }
             }
 
-            /* refill from left (0..dst_x) */
             for (int x = dst_x; x >= 0; x--) {
                 b->plateau[y][x].object = random_basic_element();
                 b->plateau[y][x].power  = GEM_BASIC;
@@ -360,7 +388,6 @@ static bool mark_fall(game *g)
                 }
             }
 
-            /* refill from right (dst_x..end) */
             for (int x = dst_x; x < b->largeur; x++) {
                 b->plateau[y][x].object = random_basic_element();
                 b->plateau[y][x].power  = GEM_BASIC;
@@ -394,24 +421,20 @@ void game_handle_mouse_click(game *g, int i, int j)
         g->b->y = j;
         g->b->select = true;
     }
-    /* same cell */
     else if (x == i && y == j) {
         g->b->select = false;
     }
-    /* not adjacent (no diagonal, distance 1 only) */
     else if (abs(i - x) + abs(j - y) != 1) {
         g->b->x = i;
         g->b->y = j;
     }
-    /* adjacent: swap */
     else {
         g->b->x2 = i;
         g->b->y2 = j;
 
-        /* Count the swap */
-        if (g->score) g->score->scores[SC_SWAPS] += 1;
+        /* count swap attempt */
+        if (g->score) g->score->scores[SC_SWAPS]++;
 
-        /* plateau[y][x] */
         SWAP(g->b->plateau[y][x], g->b->plateau[j][i]);
 
         if (valid_swap(g, x, y, i, j)) {
@@ -436,7 +459,6 @@ void game_handle_hint_request(game *g)
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
 
-            /* swap right */
             if (x + 1 < w) {
                 SWAP(g->b->plateau[y][x], g->b->plateau[y][x + 1]);
                 if (valid_swap(g, x, y, x + 1, y)) ok = true;
@@ -451,7 +473,6 @@ void game_handle_hint_request(game *g)
                 }
             }
 
-            /* swap down */
             if (y + 1 < h) {
                 SWAP(g->b->plateau[y][x], g->b->plateau[y + 1][x]);
                 if (valid_swap(g, x, y, x, y + 1)) ok = true;
@@ -468,7 +489,6 @@ void game_handle_hint_request(game *g)
         }
     }
 
-    /* no possible move */
     g->b->x = -1;
     g->b->y = -1;
     g->b->x2 = -1;
@@ -480,6 +500,9 @@ void game_handle_detonation(game *g)
 {
     if (!g) return;
 
+    /* new elimination sequence => reset combo counter */
+    s_combo = 0;
+
     if (mark_kill(g)) {
         game_init_animation(ANIM_KILL);
     } else {
@@ -490,13 +513,10 @@ void game_handle_detonation(game *g)
 void game_set_gravity(game *g, direction dir)
 {
     if (!g || !g->b) return;
-
-    /* Count gravity changes only if different */
-    if (g->score && g->b->gravite != dir) {
-        g->score->scores[SC_GRAVITY] += 1;
-    }
-
     g->b->gravite = dir;
+
+    /* track gravity usage */
+    if (g->score) g->score->scores[SC_GRAVITY]++;
 
     if (mark_fall(g)) {
         game_init_animation(ANIM_MOVE_FALL);
@@ -517,6 +537,8 @@ void game_handle_refill(game *g, int k)
     (void)k;
     if (!g || !g->b) return;
 
+    if (g->score) g->score->refills++;
+
     if (mark_fall(g)) game_init_animation(ANIM_MOVE_FALL);
     else game_init_animation(ANIM_IDLE);
 }
@@ -531,7 +553,6 @@ void game_end_animation(game *g, anim_type anim)
     switch (anim)
     {
     case ANIM_MOVE_BADSWAP:
-        /* rollback: swap back, then animate rollback */
         SWAP(g->b->plateau[g->b->y2][g->b->x2], g->b->plateau[g->b->y][g->b->x]);
         game_init_animation(ANIM_MOVE_ROLLBACK);
         break;
@@ -542,39 +563,34 @@ void game_end_animation(game *g, anim_type anim)
         break;
 
     case ANIM_MOVE_GOODSWAP:
-        /* after a valid swap, mark kills and go to kill animation */
+        /* new elimination sequence => reset combo counter */
+        s_combo = 0;
         game_handle_detonation(g);
         break;
 
-    case ANIM_KILL: {
-        /* SCORE BEFORE apply_kill() because kill marks exist right now */
-        combo_chain++;
-        int killed = count_killed_cells(g->b);
-        score_on_elimination(g, killed);
+    case ANIM_KILL:
+        /* SCORE MUST BE UPDATED BEFORE apply_kill() clears things */
+        score_on_kill(g);
 
         apply_kill(g->b);
 
         if (mark_fall(g)) game_init_animation(ANIM_MOVE_FALL);
         else {
-            combo_chain = 0;
+            maybe_end_classic_level(g);
             game_init_animation(ANIM_IDLE);
         }
         break;
-    }
 
     case ANIM_MOVE_FALL:
-        /* after falling, chain reaction? */
-        if (mark_kill(g)) {
-            game_init_animation(ANIM_KILL);
-        } else {
-            combo_chain = 0;
+        if (mark_kill(g)) game_init_animation(ANIM_KILL);
+        else {
+            maybe_end_classic_level(g);
             game_init_animation(ANIM_IDLE);
         }
         break;
 
     case ANIM_IDLE:
     default:
-        combo_chain = 0;
         game_init_animation(ANIM_IDLE);
         break;
     }
@@ -589,11 +605,10 @@ direction game_get_cell_move(game *g, int i, int j, int *n)
     if (!g || !g->b || !n) return SIZE_DIRECTION;
 
     if (game_anim_signal == ANIM_MOVE_FALL) {
-        *n = g->b->plateau[j][i].fall; /* plateau[y][x] */
+        *n = g->b->plateau[j][i].fall;
         return g->b->gravite;
     }
 
-    /* swap / rollback / goodswap / badswap: move the two swapped cells by 1 */
     if (i == g->b->x && j == g->b->y) {
         *n = 1;
         direction d =
@@ -621,8 +636,6 @@ direction game_get_cell_move(game *g, int i, int j, int *n)
 gem_kill game_get_cell_kill(game *g, int i, int j)
 {
     if (!g || !g->b) return KILL_NOKILL;
-
-    /* IMPORTANT: do NOT clear kill here, otherwise apply_kill() sees nothing */
     return g->b->plateau[j][i].kill;
 }
 
@@ -631,6 +644,5 @@ bool game_retrieve_hint(game *g, int *i, int *j)
     if (!g || !g->b || !i || !j) return false;
     *i = g->b->x2;
     *j = g->b->y2;
-
     return (g->b->x2 >= 0 && g->b->y2 >= 0);
 }

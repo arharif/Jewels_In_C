@@ -37,34 +37,54 @@ int board_refill_size(board* b) {
     else return b->queue_size;
 }
 
-static void *queue_read(queue* q, int i){
-    queue *aux = create_queue();
-    int count = 0;
-    void *res = NULL;
-    while(!isempty_queue(q)){
-        void *temp = dequeue(q);
-        enqueue(temp,aux);
-        if(count == i){
-            res = temp;
+static void *queue_read(queue *q, int i)
+{
+    if (q == NULL || i < 0) return NULL;
+
+    size_t cap = 16;
+    size_t n = 0;
+    void **tmp = malloc(cap * sizeof(*tmp));
+    if (!tmp) return NULL;
+
+    // Drain queue into tmp
+    while (!isempty_queue(q)) {
+        void *v = dequeue(q);
+
+        // If dequeue() can return NULL for "empty", isempty_queue() already prevented that.
+        // If your queue can actually contain NULL values, tell me, and we'll adjust.
+        if (n == cap) {
+            cap *= 2;
+            void **new_tmp = realloc(tmp, cap * sizeof(*tmp));
+            if (!new_tmp) {
+                free(tmp);
+                return NULL;
+            }
+            tmp = new_tmp;
         }
-        count++;
+        tmp[n++] = v;
     }
-    while(!isempty_queue(aux)){
-        enqueue(dequeue(aux),q);
+
+    // Restore queue in the same order
+    for (size_t k = 0; k < n; k++) {
+        enqueue(tmp[k], q);
     }
-    delete_queue(aux);
-    return res;
-}
-bool board_read_refill(board* b, int k, cell* c) {
-    if (b->q != NULL) {
-        cell* tmp = queue_read(b->q, k);
-        *c = *tmp;
-        if(!c) return false;
-        return true;
-    }
-    return false;
+
+    void *ret = (i < (int)n) ? tmp[i] : NULL;
+    free(tmp);
+    return ret;
 }
 
+bool board_read_refill(board *b, int k, cell *c)
+{
+    if (b == NULL || c == NULL) return false;
+    if (b->q == NULL) return false;
+
+    cell *tmp = (cell *)queue_read(b->q, k);
+    if (tmp == NULL) return false;
+
+    *c = *tmp;
+    return true;
+}
 /******************************************************************************/
 /*+ Functions used by the GUI to create and update a new game in classic mode */
 /******************************************************************************/

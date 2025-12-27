@@ -1,0 +1,16 @@
+{
+  "name": "Jewels in C (SDL2 + Desktop)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+
+  "features": {
+    "ghcr.io/devcontainers/features/desktop-lite:1": {}
+  },
+
+  "forwardPorts": [6080],
+
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y build-essential gcc make pkg-config flex bison libgmp-dev libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libsdl2-gfx-dev && sudo apt-get clean",
+
+  "remoteEnv": {
+    "XDG_RUNTIME_DIR": "/tmp/runtime-vscode"
+  }
+}

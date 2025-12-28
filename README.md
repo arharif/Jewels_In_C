@@ -14,6 +14,10 @@
 
 </div>
 
+<div align="center">
+  <img src="Menu.png" alt="Menu" width="700">
+</div>
+
 ---
 
 ## 📚 Table of Contents
@@ -162,10 +166,7 @@ Source_code/
 ├── game_save.c / game_save.h        # Save/load game state
 ├── gui_*                            # GUI rendering + menus + controller
 └── Makefile
-assets/
-├── preview.gif
-├── classic.gif
-└── solver.gif
+
 ```
 
 <p align="right">(<a href="#-table-of-contents">back to top</a>)</p>
